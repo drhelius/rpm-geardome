@@ -1,0 +1,398 @@
+name: Build and Publish RPM
+
+on:
+  workflow_dispatch:
+    inputs:
+      emulator:
+        description: 'Emulator to build'
+        required: true
+        type: choice
+        options:
+          - geargrafx
+          - gearboy
+          - gearsystem
+          - gearcoleco
+          - gearlynx
+      version:
+        description: 'Version (e.g., 1.7.2)'
+        required: true
+      fedora_version:
+        description: 'Fedora version'
+        required: true
+        default: '42'
+        type: choice
+        options:
+          - '42'
+          - '41'
+          - '40'
+
+  repository_dispatch:
+    types: [build-rpm-package]
+
+env:
+  SDL3_TAG: release-3.2.14
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: fedora:${{ inputs.fedora_version || github.event.client_payload.fedora_version }}
+    steps:
+      - name: Resolve inputs
+        run: |
+          echo "EMU=${{ inputs.emulator || github.event.client_payload.emulator }}" >> $GITHUB_ENV
+          echo "VERSION=${{ inputs.version || github.event.client_payload.version }}" >> $GITHUB_ENV
+          echo "FEDORA=${{ inputs.fedora_version || github.event.client_payload.fedora_version }}" >> $GITHUB_ENV
+          echo "ARCH=${{ matrix.arch }}" >> $GITHUB_ENV
+
+      - name: Map emulator to repo name
+        run: |
+          case "$EMU" in
+            geargrafx)  REPO_NAME="Geargrafx" ;;
+            gearboy)    REPO_NAME="Gearboy" ;;
+            gearsystem) REPO_NAME="Gearsystem" ;;
+            gearcoleco) REPO_NAME="Gearcoleco" ;;
+            gearlynx)   REPO_NAME="Gearlynx" ;;
+            *) echo "Unknown emulator: $EMU" && exit 1 ;;
+          esac
+          echo "REPO_NAME=$REPO_NAME" >> $GITHUB_ENV
+
+      - name: Install build tools
+        run: |
+          dnf install -y git curl cmake gcc gcc-c++ make rpm-build pkgconf-pkg-config \
+            mesa-libGL-devel libX11-devel libXext-devel libXrandr-devel \
+            libXcursor-devel libXfixes-devel libXi-devel libXScrnSaver-devel \
+            libxkbcommon-devel wayland-devel libdecor-devel libdrm-devel \
+            mesa-libGBM-devel mesa-libEGL-devel dbus-devel systemd-devel
+          if dnf info SDL3-devel &>/dev/null; then
+            dnf install -y SDL3-devel
+          fi
+
+      - name: Build and install SDL3
+        run: |
+          if ! rpm -q SDL3-devel &>/dev/null; then
+            echo "Building SDL3 ${{ env.SDL3_TAG }}"
+            git clone --depth 1 --branch "${{ env.SDL3_TAG }}" https://github.com/libsdl-org/SDL.git /tmp/SDL3
+            cmake -S /tmp/SDL3 -B /tmp/SDL3/build \
+              -DCMAKE_INSTALL_PREFIX=/usr \
+              -DSDL_TESTS=OFF \
+              -DSDL_EXAMPLES=OFF
+            cmake --build /tmp/SDL3/build -j$(nproc)
+            cmake --install /tmp/SDL3/build
+            rm -rf /tmp/SDL3
+          fi
+
+      - name: Checkout emulator source
+        uses: actions/checkout@v6
+        with:
+          repository: drhelius/${{ env.REPO_NAME }}
+          ref: ${{ env.VERSION }}
+
+      - name: Build RPM
+        run: |
+          mkdir -p ~/rpmbuild/{SPECS,SOURCES,BUILD,RPMS,SRPMS}
+
+          tar czf ~/rpmbuild/SOURCES/${VERSION}.tar.gz \
+            --transform "s,^\.,${REPO_NAME}-${VERSION}," .
+
+          cp platforms/linux/${EMU}.spec ~/rpmbuild/SPECS/
+
+          rpmbuild -bb ~/rpmbuild/SPECS/${EMU}.spec \
+            --define "version ${VERSION}" \
+            --define "_topdir $HOME/rpmbuild"
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.EMU }}-${{ env.VERSION }}-fc${{ env.FEDORA }}-${{ matrix.arch }}
+          path: ~/rpmbuild/RPMS/**/*.rpm
+
+  publish:
+    needs: build
+    if: ${{ !cancelled() && needs.build.result != 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+    env:
+      EMU: ${{ inputs.emulator || github.event.client_payload.emulator }}
+      VERSION: ${{ inputs.version || github.event.client_payload.version }}
+      FEDORA: ${{ inputs.fedora_version || github.event.client_payload.fedora_version }}
+    steps:
+      - name: Checkout gh-pages
+        uses: actions/checkout@v6
+        with:
+          ref: gh-pages
+          fetch-depth: 0
+
+      - name: Download RPM artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ${{ env.EMU }}-${{ env.VERSION }}-fc${{ env.FEDORA }}-*
+          path: incoming/
+          merge-multiple: true
+
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@v7
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+
+      - name: Get GPG key ID
+        run: |
+          GPG_KEY_ID=$(gpg --list-secret-keys --keyid-format long | grep sec | head -1 | awk '{print $2}' | cut -d'/' -f2)
+          echo "GPG_KEY_ID=$GPG_KEY_ID" >> $GITHUB_ENV
+
+      - name: Clean stale incoming files
+        run: |
+          find incoming/ -name '*.rpm' ! -name "${EMU}-*" -delete 2>/dev/null || true
+
+      - name: Install createrepo
+        run: sudo apt-get update && sudo apt-get install -y createrepo-c
+
+      - name: Update RPM repository
+        run: |
+          for ARCH in x86_64 aarch64; do
+            POOL="packages/fedora/${FEDORA}/${ARCH}"
+            mkdir -p "${POOL}"
+
+            # Remove old RPMs for this emulator (keep only latest)
+            rm -f "${POOL}"/${EMU}-*.rpm
+
+            # Copy matching RPMs for this architecture
+            find incoming/ -name "*.${ARCH}.rpm" -exec cp {} "${POOL}/" \;
+
+            # Generate/update repo metadata
+            createrepo_c --update "${POOL}"
+
+            # Sign repository metadata
+            rm -f "${POOL}/repodata/repomd.xml.asc"
+            gpg --batch --pinentry-mode loopback \
+              --default-key "${GPG_KEY_ID}" \
+              --detach-sign --armor \
+              "${POOL}/repodata/repomd.xml"
+          done
+
+      - name: Export public key
+        run: |
+          gpg --armor --export "${GPG_KEY_ID}" > geardome-rpm.asc
+
+      - name: Commit and push
+        run: |
+          rm -rf incoming/
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Update ${EMU} ${VERSION} for Fedora ${FEDORA}"
+          for i in 1 2 3 4 5; do
+            git push && break
+            echo "Push failed (attempt $i), rebasing and retrying..."
+            git pull --rebase
+            sleep $((i * 2))
+          done
+name: Build and Publish RPM
+
+on:
+  workflow_dispatch:
+    inputs:
+      emulator:
+        description: 'Emulator to build'
+        required: true
+        type: choice
+        options:
+          - geargrafx
+          - gearboy
+          - gearsystem
+          - gearcoleco
+          - gearlynx
+      version:
+        description: 'Version (e.g., 1.7.2)'
+        required: true
+      fedora_version:
+        description: 'Fedora version'
+        required: true
+        default: '42'
+        type: choice
+        options:
+          - '42'
+          - '41'
+          - '40'
+
+  repository_dispatch:
+    types: [build-rpm-package]
+
+env:
+  SDL3_TAG: release-3.2.14
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: fedora:${{ inputs.fedora_version || github.event.client_payload.fedora_version }}
+    steps:
+      - name: Resolve inputs
+        run: |
+          echo "EMU=${{ inputs.emulator || github.event.client_payload.emulator }}" >> $GITHUB_ENV
+          echo "VERSION=${{ inputs.version || github.event.client_payload.version }}" >> $GITHUB_ENV
+          echo "FEDORA=${{ inputs.fedora_version || github.event.client_payload.fedora_version }}" >> $GITHUB_ENV
+          echo "ARCH=${{ matrix.arch }}" >> $GITHUB_ENV
+
+      - name: Map emulator to repo name
+        run: |
+          case "$EMU" in
+            geargrafx)  REPO_NAME="Geargrafx" ;;
+            gearboy)    REPO_NAME="Gearboy" ;;
+            gearsystem) REPO_NAME="Gearsystem" ;;
+            gearcoleco) REPO_NAME="Gearcoleco" ;;
+            gearlynx)   REPO_NAME="Gearlynx" ;;
+            *) echo "Unknown emulator: $EMU" && exit 1 ;;
+          esac
+          echo "REPO_NAME=$REPO_NAME" >> $GITHUB_ENV
+
+      - name: Install build tools
+        run: |
+          dnf install -y git curl cmake gcc gcc-c++ make rpm-build pkgconf-pkg-config \
+            mesa-libGL-devel libX11-devel libXext-devel libXrandr-devel \
+            libXcursor-devel libXfixes-devel libXi-devel libXScrnSaver-devel \
+            libxkbcommon-devel wayland-devel libdecor-devel libdrm-devel \
+            mesa-libGBM-devel mesa-libEGL-devel dbus-devel systemd-devel
+          if dnf info SDL3-devel &>/dev/null; then
+            dnf install -y SDL3-devel
+          fi
+
+      - name: Build and install SDL3
+        run: |
+          if ! rpm -q SDL3-devel &>/dev/null; then
+            echo "Building SDL3 ${{ env.SDL3_TAG }}"
+            git clone --depth 1 --branch "${{ env.SDL3_TAG }}" https://github.com/libsdl-org/SDL.git /tmp/SDL3
+            cmake -S /tmp/SDL3 -B /tmp/SDL3/build \
+              -DCMAKE_INSTALL_PREFIX=/usr \
+              -DSDL_TESTS=OFF \
+              -DSDL_EXAMPLES=OFF
+            cmake --build /tmp/SDL3/build -j$(nproc)
+            cmake --install /tmp/SDL3/build
+            rm -rf /tmp/SDL3
+          fi
+
+      - name: Checkout emulator source
+        uses: actions/checkout@v6
+        with:
+          repository: drhelius/${{ env.REPO_NAME }}
+          ref: ${{ env.VERSION }}
+
+      - name: Build RPM
+        run: |
+          mkdir -p ~/rpmbuild/{SPECS,SOURCES,BUILD,RPMS,SRPMS}
+
+          tar czf ~/rpmbuild/SOURCES/${VERSION}.tar.gz \
+            --transform "s,^\.,${REPO_NAME}-${VERSION}," .
+
+          cp platforms/linux/${EMU}.spec ~/rpmbuild/SPECS/
+
+          rpmbuild -bb ~/rpmbuild/SPECS/${EMU}.spec \
+            --define "version ${VERSION}" \
+            --define "_topdir $HOME/rpmbuild"
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.EMU }}-${{ env.VERSION }}-fc${{ env.FEDORA }}-${{ matrix.arch }}
+          path: ~/rpmbuild/RPMS/**/*.rpm
+
+  publish:
+    needs: build
+    if: ${{ !cancelled() && needs.build.result != 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+    env:
+      EMU: ${{ inputs.emulator || github.event.client_payload.emulator }}
+      VERSION: ${{ inputs.version || github.event.client_payload.version }}
+      FEDORA: ${{ inputs.fedora_version || github.event.client_payload.fedora_version }}
+    steps:
+      - name: Checkout gh-pages
+        uses: actions/checkout@v6
+        with:
+          ref: gh-pages
+          fetch-depth: 0
+
+      - name: Download RPM artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ${{ env.EMU }}-${{ env.VERSION }}-fc${{ env.FEDORA }}-*
+          path: incoming/
+          merge-multiple: true
+
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@v7
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+
+      - name: Get GPG key ID
+        run: |
+          GPG_KEY_ID=$(gpg --list-secret-keys --keyid-format long | grep sec | head -1 | awk '{print $2}' | cut -d'/' -f2)
+          echo "GPG_KEY_ID=$GPG_KEY_ID" >> $GITHUB_ENV
+
+      - name: Clean stale incoming files
+        run: |
+          find incoming/ -name '*.rpm' ! -name "${EMU}-*" -delete 2>/dev/null || true
+
+      - name: Install createrepo
+        run: sudo apt-get update && sudo apt-get install -y createrepo-c
+
+      - name: Update RPM repository
+        run: |
+          for ARCH in x86_64 aarch64; do
+            POOL="packages/fedora/${FEDORA}/${ARCH}"
+            mkdir -p "${POOL}"
+
+            # Remove old RPMs for this emulator (keep only latest)
+            rm -f "${POOL}"/${EMU}-*.rpm
+
+            # Copy matching RPMs for this architecture
+            find incoming/ -name "*.${ARCH}.rpm" -exec cp {} "${POOL}/" \;
+
+            # Generate/update repo metadata
+            createrepo_c --update "${POOL}"
+
+            # Sign repository metadata
+            rm -f "${POOL}/repodata/repomd.xml.asc"
+            gpg --batch --pinentry-mode loopback \
+              --default-key "${GPG_KEY_ID}" \
+              --detach-sign --armor \
+              "${POOL}/repodata/repomd.xml"
+          done
+
+      - name: Export public key
+        run: |
+          gpg --armor --export "${GPG_KEY_ID}" > geardome-rpm.asc
+
+      - name: Commit and push
+        run: |
+          rm -rf incoming/
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Update ${EMU} ${VERSION} for Fedora ${FEDORA}"
+          for i in 1 2 3 4 5; do
+            git push && break
+            echo "Push failed (attempt $i), rebasing and retrying..."
+            git pull --rebase
+            sleep $((i * 2))
+          done
