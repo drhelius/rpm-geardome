@@ -19,12 +19,12 @@ on:
       fedora_version:
         description: 'Fedora version'
         required: true
-        default: '42'
+        default: '43'
         type: choice
         options:
+          - '43'
           - '42'
           - '41'
-          - '40'
 
   repository_dispatch:
     types: [build-rpm-package]
