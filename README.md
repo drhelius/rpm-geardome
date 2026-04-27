@@ -69,7 +69,7 @@ sudo rpm -e gpg-pubkey-<KEY_ID>
 
 ## Supported Platforms
 
-- Fedora 40, 41, 42
+- Fedora 41, 42, 43
 - Architectures: x86_64, aarch64
 
 ## License
