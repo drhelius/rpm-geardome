@@ -71,7 +71,7 @@ jobs:
             mesa-libGL-devel libX11-devel libXext-devel libXrandr-devel \
             libXcursor-devel libXfixes-devel libXi-devel libXScrnSaver-devel \
             libxkbcommon-devel wayland-devel libdecor-devel libdrm-devel \
-            mesa-libGBM-devel mesa-libEGL-devel dbus-devel systemd-devel
+            mesa-libgbm-devel mesa-libEGL-devel dbus-devel systemd-devel
           if dnf info SDL3-devel &>/dev/null; then
             dnf install -y SDL3-devel
           fi
