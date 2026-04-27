@@ -6,7 +6,7 @@ This is the official RPM repository for [DrHelius](https://github.com/drhelius) 
 
 | Emulator | System | Install Command |
 |----------|--------|-----------------|
-| [Gearboy](https://github.com/drhelius/Gearboy) | Game Boy / Game Boy Color | `sudo dnf install gearboy` |
+| [Gearboy](https://github.com/drhelius/Gearboy) | Game Boy / Game Boy Color / Super Game Boy | `sudo dnf install gearboy` |
 | [Gearsystem](https://github.com/drhelius/Gearsystem) | Sega Master System / Game Gear / SG-1000 | `sudo dnf install gearsystem` |
 | [Gearcoleco](https://github.com/drhelius/Gearcoleco) | ColecoVision | `sudo dnf install gearcoleco` |
 | [Geargrafx](https://github.com/drhelius/Geargrafx) | TurboGrafx-16 / PC Engine / SuperGrafx / CD-ROM² | `sudo dnf install geargrafx` |
