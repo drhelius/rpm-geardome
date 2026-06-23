@@ -29,9 +29,6 @@ on:
   repository_dispatch:
     types: [build-rpm-package]
 
-env:
-  SDL3_TAG: release-3.2.14
-
 jobs:
   build:
     strategy:
@@ -47,13 +44,22 @@ jobs:
       image: fedora:${{ inputs.fedora_version || github.event.client_payload.fedora_version }}
     steps:
       - name: Resolve inputs
+        id: resolve
         run: |
-          echo "EMU=${{ inputs.emulator || github.event.client_payload.emulator }}" >> $GITHUB_ENV
-          echo "VERSION=${{ inputs.version || github.event.client_payload.version }}" >> $GITHUB_ENV
-          echo "FEDORA=${{ inputs.fedora_version || github.event.client_payload.fedora_version }}" >> $GITHUB_ENV
+          EMU="${{ inputs.emulator || github.event.client_payload.emulator }}"
+          VERSION="${{ inputs.version || github.event.client_payload.version }}"
+          FEDORA="${{ inputs.fedora_version || github.event.client_payload.fedora_version }}"
+
+          echo "EMU=$EMU" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "FEDORA=$FEDORA" >> $GITHUB_ENV
           echo "ARCH=${{ matrix.arch }}" >> $GITHUB_ENV
+          echo "emu=$EMU" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "fedora=$FEDORA" >> $GITHUB_OUTPUT
 
       - name: Map emulator to repo name
+        id: repo
         run: |
           case "$EMU" in
             geargrafx)  REPO_NAME="Geargrafx" ;;
@@ -64,37 +70,33 @@ jobs:
             *) echo "Unknown emulator: $EMU" && exit 1 ;;
           esac
           echo "REPO_NAME=$REPO_NAME" >> $GITHUB_ENV
+          echo "repo_name=$REPO_NAME" >> $GITHUB_OUTPUT
 
       - name: Install build tools
         run: |
+          if ! dnf info SDL3-devel &>/dev/null; then
+            echo "SDL3-devel is not available for Fedora ${FEDORA}"
+            exit 1
+          fi
+
           dnf install -y git curl cmake gcc gcc-c++ make rpm-build pkgconf-pkg-config \
             mesa-libGL-devel libX11-devel libXext-devel libXrandr-devel \
             libXcursor-devel libXfixes-devel libXi-devel libXScrnSaver-devel \
             libxkbcommon-devel wayland-devel libdecor-devel libdrm-devel \
-            mesa-libgbm-devel mesa-libEGL-devel dbus-devel systemd-devel
-          if dnf info SDL3-devel &>/dev/null; then
-            dnf install -y SDL3-devel
-          fi
+            mesa-libgbm-devel mesa-libEGL-devel dbus-devel systemd-devel \
+            SDL3-devel
 
-      - name: Build and install SDL3
+      - name: Verify SDL3 availability
         run: |
-          if ! rpm -q SDL3-devel &>/dev/null; then
-            echo "Building SDL3 ${{ env.SDL3_TAG }}"
-            git clone --depth 1 --branch "${{ env.SDL3_TAG }}" https://github.com/libsdl-org/SDL.git /tmp/SDL3
-            cmake -S /tmp/SDL3 -B /tmp/SDL3/build \
-              -DCMAKE_INSTALL_PREFIX=/usr \
-              -DSDL_TESTS=OFF \
-              -DSDL_EXAMPLES=OFF
-            cmake --build /tmp/SDL3/build -j$(nproc)
-            cmake --install /tmp/SDL3/build
-            rm -rf /tmp/SDL3
-          fi
+          rpm -q SDL3 SDL3-devel
+          pkg-config --exists sdl3
+          echo "Using SDL3 $(pkg-config --modversion sdl3) from $(pkg-config --variable=libdir sdl3)"
 
       - name: Checkout emulator source
         uses: actions/checkout@v6
         with:
-          repository: drhelius/${{ env.REPO_NAME }}
-          ref: ${{ env.VERSION }}
+          repository: drhelius/${{ steps.repo.outputs.repo_name }}
+          ref: ${{ steps.resolve.outputs.version }}
 
       - name: Build RPM
         run: |
@@ -112,7 +114,7 @@ jobs:
       - name: Upload RPM artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.EMU }}-${{ env.VERSION }}-fc${{ env.FEDORA }}-${{ matrix.arch }}
+          name: ${{ steps.resolve.outputs.emu }}-${{ steps.resolve.outputs.version }}-fc${{ steps.resolve.outputs.fedora }}-${{ matrix.arch }}
           path: ~/rpmbuild/RPMS/**/*.rpm
 
   publish:
@@ -190,6 +192,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
+          if git diff --cached --quiet; then
+            echo "No repository changes to publish"
+            exit 0
+          fi
           git commit -m "Update ${EMU} ${VERSION} for Fedora ${FEDORA}"
           for i in 1 2 3 4 5; do
             git push && break
