@@ -11,6 +11,7 @@ This is the official RPM repository for [DrHelius](https://github.com/drhelius) 
 | [Gearcoleco](https://github.com/drhelius/Gearcoleco) | ColecoVision | `sudo dnf install gearcoleco` |
 | [Geargrafx](https://github.com/drhelius/Geargrafx) | TurboGrafx-16 / PC Engine / SuperGrafx / CD-ROM² | `sudo dnf install geargrafx` |
 | [Gearlynx](https://github.com/drhelius/Gearlynx) | Atari Lynx | `sudo dnf install gearlynx` |
+| [Geartowns](https://github.com/drhelius/Geartowns) | FM Towns | `sudo dnf install geartowns` |
 
 ## Installation
 
@@ -38,6 +39,7 @@ sudo dnf install gearsystem
 sudo dnf install gearcoleco
 sudo dnf install geargrafx
 sudo dnf install gearlynx
+sudo dnf install geartowns
 ```
 
 ## Updating
@@ -69,7 +71,7 @@ sudo rpm -e gpg-pubkey-<KEY_ID>
 
 ## Supported Platforms
 
-- Fedora 41, 42, 43
+- Fedora 44, 43, 42
 - Architectures: x86_64, aarch64
 
 ## License

@@ -13,18 +13,19 @@ on:
           - gearsystem
           - gearcoleco
           - gearlynx
+          - geartowns
       version:
         description: 'Version (e.g., 1.7.2)'
         required: true
       fedora_version:
         description: 'Fedora version'
         required: true
-        default: '43'
+        default: '44'
         type: choice
         options:
+          - '44'
           - '43'
           - '42'
-          - '41'
 
   repository_dispatch:
     types: [build-rpm-package]
@@ -50,6 +51,11 @@ jobs:
           VERSION="${{ inputs.version || github.event.client_payload.version }}"
           FEDORA="${{ inputs.fedora_version || github.event.client_payload.fedora_version }}"
 
+          case "$FEDORA" in
+            44|43|42) ;;
+            *) echo "Unsupported Fedora version: $FEDORA" && exit 1 ;;
+          esac
+
           echo "EMU=$EMU" >> $GITHUB_ENV
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "FEDORA=$FEDORA" >> $GITHUB_ENV
@@ -67,6 +73,7 @@ jobs:
             gearsystem) REPO_NAME="Gearsystem" ;;
             gearcoleco) REPO_NAME="Gearcoleco" ;;
             gearlynx)   REPO_NAME="Gearlynx" ;;
+            geartowns)  REPO_NAME="Geartowns" ;;
             *) echo "Unknown emulator: $EMU" && exit 1 ;;
           esac
           echo "REPO_NAME=$REPO_NAME" >> $GITHUB_ENV
@@ -197,9 +204,17 @@ jobs:
             exit 0
           fi
           git commit -m "Update ${EMU} ${VERSION} for Fedora ${FEDORA}"
+          PUSHED=false
           for i in 1 2 3 4 5; do
-            git push && break
+            if git push; then
+              PUSHED=true
+              break
+            fi
             echo "Push failed (attempt $i), rebasing and retrying..."
             git pull --rebase
             sleep $((i * 2))
           done
+          if [ "$PUSHED" != true ]; then
+            echo "Failed to publish RPM repository after 5 attempts"
+            exit 1
+          fi
