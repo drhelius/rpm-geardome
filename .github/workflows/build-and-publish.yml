@@ -86,7 +86,7 @@ jobs:
             exit 1
           fi
 
-          dnf install -y git curl cmake gcc gcc-c++ make rpm-build pkgconf-pkg-config \
+          dnf install -y git curl cmake gcc gcc-c++ libatomic make rpm-build pkgconf-pkg-config \
             mesa-libGL-devel libX11-devel libXext-devel libXrandr-devel \
             libXcursor-devel libXfixes-devel libXi-devel libXScrnSaver-devel \
             libxkbcommon-devel wayland-devel libdecor-devel libdrm-devel \
