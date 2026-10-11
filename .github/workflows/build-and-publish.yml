@@ -146,7 +146,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           pattern: ${{ env.EMU }}-${{ env.VERSION }}-fc${{ env.FEDORA }}-*
-          path: incoming/
+          path: ${{ runner.temp }}/incoming/
           merge-multiple: true
 
       - name: Import GPG key
@@ -161,60 +161,57 @@ jobs:
 
       - name: Clean stale incoming files
         run: |
-          find incoming/ -name '*.rpm' ! -name "${EMU}-*" -delete 2>/dev/null || true
+          find "${RUNNER_TEMP}/incoming/" -name '*.rpm' ! -name "${EMU}-*" -delete 2>/dev/null || true
 
       - name: Install createrepo
         run: sudo apt-get update && sudo apt-get install -y createrepo-c
 
-      - name: Update RPM repository
+      - name: Update and publish RPM repository
         run: |
-          for ARCH in x86_64 aarch64; do
-            POOL="packages/fedora/${FEDORA}/${ARCH}"
-            mkdir -p "${POOL}"
-
-            # Remove old RPMs for this emulator (keep only latest)
-            rm -f "${POOL}"/${EMU}-*.rpm
-
-            # Copy matching RPMs for this architecture
-            find incoming/ -name "*.${ARCH}.rpm" -exec cp {} "${POOL}/" \;
-
-            # Generate/update repo metadata
-            createrepo_c --update "${POOL}"
-
-            # Sign repository metadata
-            rm -f "${POOL}/repodata/repomd.xml.asc"
-            gpg --batch --pinentry-mode loopback \
-              --default-key "${GPG_KEY_ID}" \
-              --detach-sign --armor \
-              "${POOL}/repodata/repomd.xml"
-          done
-
-      - name: Export public key
-        run: |
-          gpg --armor --export "${GPG_KEY_ID}" > geardome-rpm.asc
-
-      - name: Commit and push
-        run: |
-          rm -rf incoming/
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "No repository changes to publish"
-            exit 0
-          fi
-          git commit -m "Update ${EMU} ${VERSION} for Fedora ${FEDORA}"
-          PUSHED=false
-          for i in 1 2 3 4 5; do
-            if git push; then
-              PUSHED=true
-              break
+
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            git fetch origin gh-pages
+            git reset --hard FETCH_HEAD
+            git clean -fd
+
+            for ARCH in x86_64 aarch64; do
+              POOL="packages/fedora/${FEDORA}/${ARCH}"
+              mkdir -p "${POOL}"
+
+              # Remove old RPMs for this emulator (keep only latest)
+              rm -f "${POOL}"/${EMU}-*.rpm
+
+              # Copy matching RPMs for this architecture
+              find "${RUNNER_TEMP}/incoming/" -name "*.${ARCH}.rpm" -exec cp {} "${POOL}/" \;
+
+              # Generate/update repo metadata
+              createrepo_c --update "${POOL}"
+
+              # Sign repository metadata
+              rm -f "${POOL}/repodata/repomd.xml.asc"
+              gpg --batch --pinentry-mode loopback \
+                --default-key "${GPG_KEY_ID}" \
+                --detach-sign --armor \
+                "${POOL}/repodata/repomd.xml"
+            done
+
+            gpg --armor --export "${GPG_KEY_ID}" > geardome-rpm.asc
+
+            git add -A
+            if git diff --cached --quiet; then
+              echo "No repository changes to publish"
+              exit 0
             fi
-            echo "Push failed (attempt $i), rebasing and retrying..."
-            git pull --rebase
-            sleep $((i * 2))
+            git commit -m "Update ${EMU} ${VERSION} for Fedora ${FEDORA}"
+
+            if git push origin HEAD:gh-pages; then
+              exit 0
+            fi
+            echo "Push failed (attempt $i), regenerating repository and retrying..."
+            sleep $((RANDOM % 10 + i * 3))
           done
-          if [ "$PUSHED" != true ]; then
-            echo "Failed to publish RPM repository after 5 attempts"
-            exit 1
-          fi
+
+          echo "Failed to publish RPM repository after 10 attempts"
+          exit 1
